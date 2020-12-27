@@ -31,6 +31,7 @@
 
 (require 'epc)
 (require 'python-environment)
+(require 'jupyter-client)               ; only for jedi:my-completion-at-point
 
 (declare-function popup-tip "popup")
 (declare-function pos-tip-show "pos-tip")
@@ -724,6 +725,17 @@ See: https://github.com/tkf/emacs-jedi/issues/54"
                        method-name
                        (list source line column source-path))))
 
+(defun jedi:my-call-sync (method-name)
+  "Call METHOD-NAME on Jedi's `Script(...)` synchronously."
+  (let ((source      (buffer-substring-no-properties (point-min) (point-max)))
+        ;; line=0 is an error for jedi, but is possible for empty buffers.
+        (line        (max 1 (count-lines (point-min) (min (1+ (point)) (point-max)))))
+        (column      (- (point) (line-beginning-position)))
+        (source-path (jedi:-buffer-file-name)))
+    (epc:call-sync (jedi:get-epc)
+                   method-name
+                   (list source line column source-path))))
+
 
 ;;; Completion
 
@@ -741,6 +753,32 @@ See: https://github.com/tkf/emacs-jedi/issues/54"
   (deferred:nextc (jedi:call-deferred 'complete)
     (lambda (reply)
       (setq jedi:complete-reply reply))))
+
+(defun jedi:my-completion-at-point ()
+  "Completion function for `completion-at-point-functions'."
+  (let ((prefix (jupyter-completion-prefix))) ; TODO: Write my own routine for this.
+    (when (consp prefix)
+      (setq prefix (car prefix)))
+    (list (- (point) (length prefix))
+          (point)
+          (completion-table-dynamic
+           (lambda (_)
+	     (jedi:my-completion-prepare-candidates (jedi:my-call-sync 'my_complete))))
+          :annotation-function (lambda (arg) (get-text-property 0 'type arg)))))
+
+(defun jedi:my-completion-prepare-candidates (candidates)
+  "Transform CANDIDATES alist into a list of strings w/ text properties."
+  (let ((max-len (apply #'max (map 'list
+                                   (lambda (c) (length (plist-get c :name)))
+                                   candidates))))
+    (map 'list
+         (lambda (c)
+           (let* ((name (plist-get c :name))
+	          (type (plist-get c :type))
+                  (prefix (make-string (1+ (- max-len (length name))) ? )))
+             (put-text-property 0 1 'type (concat prefix type) name)
+             name))
+         candidates)))
 
 
 ;;; Call signature (get_in_function_call)
