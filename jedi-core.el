@@ -440,10 +440,38 @@ avoid collision by something like this::
 (defun jedi:handle-post-command ()
   (jedi:get-in-function-call-when-idle))
 
+;;; Commented out as a backup of the original jedi-mode.
+
+;; (define-minor-mode jedi-mode
+;;   "Jedi mode.
+;; When `jedi-mode' is on, call signature is automatically shown as
+;; toolitp when inside of function call.
+
+;; \\{jedi-mode-map}"
+;;   :keymap jedi-mode-map
+;;   :group 'jedi
+;;   (let ((map jedi-mode-map))
+;;     (when jedi:use-shortcuts
+;;       (define-key map (kbd "M-.") 'jedi:goto-definition)
+;;       (define-key map (kbd "M-,") 'jedi:goto-definition-pop-marker)))
+;;   (if jedi-mode
+;;       (progn
+;;         (when jedi:install-imenu
+;;           (jedi:defined-names-deferred)
+;;           (setq imenu-create-index-function jedi:imenu-create-index-function))
+;;         (add-hook 'post-command-hook 'jedi:handle-post-command nil t)
+;;         (add-hook 'kill-buffer-hook 'jedi:server-pool--gc-when-idle nil t))
+;;     (remove-hook 'post-command-hook 'jedi:handle-post-command t)
+;;     (remove-hook 'kill-buffer-hook 'jedi:server-pool--gc-when-idle t)
+;;     (jedi:server-pool--gc-when-idle))
+;;   (when jedi:mode-function
+;;     (funcall jedi:mode-function)))
+
 (define-minor-mode jedi-mode
-  "Jedi mode.
-When `jedi-mode' is on, call signature is automatically shown as
-toolitp when inside of function call.
+  "Modified Jedi mode.
+Differences w.r.t. original Jedi mode: 1) doesn't show call
+signature automatically (provides new fn + kdb shortcut for
+that); 2) provides fn for `completion-at-point-functions'.
 
 \\{jedi-mode-map}"
   :keymap jedi-mode-map
@@ -457,9 +485,7 @@ toolitp when inside of function call.
         (when jedi:install-imenu
           (jedi:defined-names-deferred)
           (setq imenu-create-index-function jedi:imenu-create-index-function))
-        (add-hook 'post-command-hook 'jedi:handle-post-command nil t)
         (add-hook 'kill-buffer-hook 'jedi:server-pool--gc-when-idle nil t))
-    (remove-hook 'post-command-hook 'jedi:handle-post-command t)
     (remove-hook 'kill-buffer-hook 'jedi:server-pool--gc-when-idle t)
     (jedi:server-pool--gc-when-idle))
   (when jedi:mode-function
@@ -473,6 +499,7 @@ toolitp when inside of function call.
   (define-key map (kbd "C-c ?") 'jedi:show-doc)
   (define-key map (kbd "C-c .") 'jedi:goto-definition)
   (define-key map (kbd "C-c ,") 'jedi:goto-definition-pop-marker)
+  (define-key map (kbd "C-c SPC") 'jedi:my-get-in-function-call)
   (let ((command (cond
                   ((featurep 'helm) 'helm-jedi-related-names)
                   ((featurep 'anything) 'anything-jedi-related-names)
@@ -811,6 +838,12 @@ See: https://github.com/tkf/emacs-jedi/issues/54"
   (deferred:nextc
     (jedi:call-deferred 'get_in_function_call)
     #'jedi:get-in-function-call--tooltip-show))
+
+(defun jedi:my-get-in-function-call ()
+  "Manually (and synchronously) show call signature tooltip."
+  (interactive)
+  (jedi:get-in-function-call--tooltip-show
+   (jedi:my-call-sync 'get_in_function_call)))
 
 (defun jedi:get-in-function-call-when-idle ()
   "Show tooltip when Emacs is ilde."
