@@ -826,11 +826,10 @@ See: https://github.com/tkf/emacs-jedi/issues/54"
       (concat call_name "(" (mapconcat #'identity params ", ") ")"))))
 
 (defun jedi:get-in-function-call--tooltip-show (args)
-  (when (and args (or (and (boundp 'ac-completing) (not ac-completing))
-                      (and (boundp 'company-pseudo-tooltip-overlay)
-                           (not company-pseudo-tooltip-overlay))))
-    (jedi:tooltip-show
-     (apply #'jedi:get-in-function-call--construct-call-signature args))))
+  (if args
+      (jedi:tooltip-show
+       (apply #'jedi:get-in-function-call--construct-call-signature args))
+    (message "Can't get function signature")))
 
 (defun jedi:get-in-function-call ()
   "Manually show call signature tooltip."
