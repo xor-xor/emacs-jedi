@@ -788,9 +788,21 @@ See: https://github.com/tkf/emacs-jedi/issues/54"
       (setq prefix (car prefix)))
     (list (- (point) (length prefix))
           (point)
-          (completion-table-dynamic
+          (completion-table-with-cache
            (lambda (_)
-	     (jedi:my-completion-prepare-candidates (jedi:my-call-sync 'my_complete))))
+             ;; XXX Why this lambda is called three times each time
+             ;; `jedi:my-completion-at-point' is called w/
+             ;; `completion-table-dynamic'? It has nothing to do w/ the length
+             ;; of `completion-at-point-functions', though. BTW,
+             ;; `completion-table-with-cache' kind of mitigates this (lambda is
+             ;; called only once), but this cache doesn't seem to work b/c I see
+             ;; new entries in jediepcserver.log for the same completion. Maybe
+             ;; the input arg is just too long (I was testing it in some
+             ;; real-world Django app module)..? Here's an useful one-liner:
+             ;; tail -f jediepcserver.log | egrep "received.+call [0-9]+ my_complete"  | cut -c -150
+             (let ((candidates (jedi:my-call-sync 'my_complete)))
+	       (when candidates
+                 (jedi:my-completion-prepare-candidates candidates)))))
           :annotation-function (lambda (arg) (get-text-property 0 'type arg)))))
 
 (defun jedi:my-completion-prepare-candidates (candidates)
