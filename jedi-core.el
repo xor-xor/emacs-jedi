@@ -1311,6 +1311,16 @@ This is automatically added to the `jedi-mode-hook' when
       (set (make-local-variable 'jedi:server-args)
            (append args jedi:server-args)))))
 
+;;; NOTE(xor-xor): `jedi:setup' -> (intermediate calls) -> `jedi:start-server'
+;;; runs jediepcserver (with `jedi:server-command'), which in turn starts jedi
+;;; (the "original" one) as a subprocess, one for each venv given via
+;;; `jedi:server-args'. So in case of changing `jedi:server-args', you need to:
+;;; 1) kill jediepcserver process
+;;; 2) kill given .py buffer(s)
+;;; 3) re-open buffer(s) from (2)
+;;; Killing jediepcserver followed by `jedi:setup' is not enough because that
+;;; would get a stale version of `jedi:server-args', which is buffer-local.
+
 ;;;###autoload
 (defun jedi:setup ()
   "Fully setup jedi.el for current buffer.
@@ -1341,6 +1351,9 @@ what jedi can do."
 ;;; Virtualenv setup
 (defvar jedi:install-server--command
   `("pip" "install" "--upgrade" ,(convert-standard-filename jedi:source-dir)))
+
+;;; NOTE(xor-xor): `jedi:install-server' boils down to running e.g. `pip install
+;;; ~/.emacs.d/elpa/jedi-core-20181207.1/` from jedi's venv.
 
 ;;;###autoload
 (defun jedi:install-server ()
