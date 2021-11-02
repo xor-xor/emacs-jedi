@@ -807,17 +807,17 @@ See: https://github.com/tkf/emacs-jedi/issues/54"
 
 (defun jedi:my-completion-prepare-candidates (candidates)
   "Transform CANDIDATES alist into a list of strings w/ text properties."
-  (let ((max-len (apply #'max (map 'list
-                                   (lambda (c) (length (plist-get c :name)))
-                                   candidates))))
-    (map 'list
-         (lambda (c)
-           (let* ((name (plist-get c :name))
-	          (type (plist-get c :type))
-                  (prefix (make-string (1+ (- max-len (length name))) ? )))
-             (put-text-property 0 1 'type (concat prefix type) name)
-             name))
-         candidates)))
+  (let ((max-len (apply #'max (cl-map 'list
+                                      (lambda (c) (length (plist-get c :name)))
+                                      candidates))))
+    (cl-map 'list
+            (lambda (c)
+              (let* ((name (plist-get c :name))
+	             (type (plist-get c :type))
+                     (prefix (make-string (1+ (- max-len (length name))) ? )))
+                (put-text-property 0 1 'type (concat prefix type) name)
+                name))
+            candidates)))
 
 
 ;;; Call signature (get_in_function_call)
