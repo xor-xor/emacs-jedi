@@ -31,7 +31,7 @@
 
 (require 'epc)
 (require 'python-environment)
-(require 'jupyter-client)               ; only for jedi:my-completion-at-point
+(require 'jupyter-client)               ; only for `jedi:my-completion-at-point'
 
 (declare-function popup-tip "popup")
 (declare-function pos-tip-show "pos-tip")
