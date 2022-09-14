@@ -31,7 +31,6 @@
 
 (require 'epc)
 (require 'python-environment)
-(require 'jupyter-client)               ; only for `jedi:my-completion-at-point'
 
 (declare-function popup-tip "popup")
 (declare-function pos-tip-show "pos-tip")
@@ -781,6 +780,96 @@ See: https://github.com/tkf/emacs-jedi/issues/54"
     (lambda (reply)
       (setq jedi:complete-reply reply))))
 
+
+;;; XXX temporary copy from emacs-jupyter starts here
+
+(defun jupyter-completion-number-p ()
+  "Return non-nil if the text before `point' may be a floating point number."
+  (and (char-before)
+       (or (<= ?0 (char-before) ?9)
+           (eq (char-before) ?.))
+       (save-excursion
+         (skip-syntax-backward "w.")
+         (looking-at-p "[0-9]+\\.?[0-9]*"))))
+
+(defun jupyter-completion-symbol-beginning (&optional pos)
+  "Return the beginning position of a completion symbol.
+The beginning position of the symbol around `point' is returned.
+If no symbol exists around point, then `point' is returned.
+
+If POS is non-nil, goto POS first."
+  (save-excursion
+    (and pos (goto-char pos))
+    ;; FIXME: This is language specific
+    (if (and (eq (char-syntax (char-before)) ?.)
+             (not (eq (char-before) ?.)))
+        ;; Complete operators, but not the field/attribute
+        ;; accessor .
+        (skip-syntax-backward ".")
+      (skip-syntax-backward "w_"))
+    (point)))
+
+(defun jupyter-completion-grab-symbol-cons (re &optional max-len)
+  "Return the current completion prefix before point.
+Return either a STRING or a (STRING . t) pair.  If RE matches the
+beginning of the current symbol before point, return the latter.
+Otherwise return the symbol before point.  If no completion can be
+done at point, return nil.
+
+MAX-LEN is the maximum number of characters to search behind the
+begiining of the symbol at point to look for a match of RE."
+  (let ((symbol (if (or (looking-at "\\>\\|\\_>")
+                        ;; Complete operators
+                        (and (char-before)
+                             (eq (char-syntax (char-before)) ?.)))
+                    (buffer-substring-no-properties
+                     (jupyter-completion-symbol-beginning) (point))
+                  (unless (and (char-after)
+                               (memq (char-syntax (char-after)) '(?w ?_)))
+                    ""))))
+    (when symbol
+      (save-excursion
+        (forward-char (- (length symbol)))
+        (if (looking-back re (if max-len
+                                 (- (point) max-len)
+                               (line-beginning-position)))
+            (cons symbol t)
+          symbol)))))
+
+;;; this fn is cl-defgeneric in emacs-jupyter
+(defun jupyter-completion-prefix (&optional re max-len)
+  "Return the prefix for the current completion context.
+The default method calls `jupyter-completion-grab-symbol-cons'
+with RE and MAX-LEN as arguments, RE defaulting to \"\\\\.\".  It
+also handles argument lists surrounded by parentheses specially
+by considering an open parentheses and the symbol before it as a
+completion prefix since some kernels will complete argument lists
+if given such a prefix.
+
+Note that the prefix returned is not the content sent to the
+kernel, but the prefix used by `jupyter-completion-at-point'.  See
+`jupyter-code-context' for what is actually sent to the kernel."
+  (or re (setq re "\\."))
+  (cond
+   ;; FIXME: Needed for cases where all completions are retrieved
+   ;; from Base.| and the prefix turns empty again after
+   ;; Base.REPLCompletions)|
+   ;;
+   ;; Actually the problem stems from stting the prefix length to 0
+   ;; in company in the case Base.| and we have not selected a
+   ;; completion and just pass over it.
+   ((and (looking-at-p "\\_>")
+         (eq (char-syntax (char-before)) ?\)))
+    nil)
+   (t
+    (unless (jupyter-completion-number-p)
+      (jupyter-completion-grab-symbol-cons re max-len)))))
+
+
+;;; XXX temporary copy from emacs-jupyter ends here
+
+;;; XXX TODO: What problem does this fn suppose to solve? If only completion
+;;; with emacs-jupyter buffers, then more than likely it is not needed anymore.
 (defun jedi:my-completion-at-point ()
   "Completion function for `completion-at-point-functions'."
   (let ((prefix (jupyter-completion-prefix))) ; TODO: Write my own routine for this.
