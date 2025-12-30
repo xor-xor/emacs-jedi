@@ -26,15 +26,14 @@ If not, see <http://www.gnu.org/licenses/>.
 """
 
 import argparse
-import glob
-import itertools
+
 import logging
 import logging.handlers
 import os
 import re
-import site
 import sys
 from collections import namedtuple
+from importlib import metadata
 
 import jedi
 import jedi.api
@@ -90,10 +89,6 @@ parser.add_argument(
     help='start ipdb when error occurs.')
 
 
-PY3 = (sys.version_info[0] >= 3)
-NEED_ENCODE = not PY3
-
-
 LogSettings = namedtuple(
     'LogSettings',
     [
@@ -125,6 +120,94 @@ else:
             _cached_jedi_environments[venv] = jedienv
             return jedienv
 
+try:
+    jedi.get_default_project
+except AttributeError:
+    jedi_get_default_project = None
+else:
+    _cached_jedi_projects = {}
+
+    def jedi_get_default_project(path):
+        """Cache jedi projects to avoid detection cost."""
+        try:
+            return _cached_jedi_projects[path]
+        except KeyError:
+            proj = _cached_jedi_projects[path] = jedi.get_default_project(path)
+            logger.debug('Calculated jedi project for %s: %s', path, proj.path)
+            return proj
+
+
+def _parse_version(version_str):
+    """Return (MAJOR, MINOR, *REST) version parts
+
+    MAJOR and MINOR are integers, REST is an array of strings.
+
+    Return None on failure.
+    """
+    parts = version_str.split('.', 2)
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1]), parts[2:]
+    except ValueError:
+        return None
+
+
+jedi_script_wrapper = jedi.Script
+JEDI_VERSION = _parse_version(jedi.__version__)
+if JEDI_VERSION is not None and JEDI_VERSION[:2] < (0, 16):
+    class JediScriptCompatWrapper:
+        def __init__(self, code, path, **kwargs):
+            self.source = code
+            self.source_path = path
+            self.kwargs = kwargs
+
+        def complete(self, line, column):
+            return jedi.Script(self.source,
+                               line, column,
+                               self.source_path,
+                               **self.kwargs).completions()
+
+        def get_signatures(self, line, column):
+            return jedi.Script(self.source,
+                               line, column,
+                               self.source_path,
+                               **self.kwargs).call_signatures()
+
+        def goto(self, line, column):
+            return jedi.Script(self.source,
+                               line, column,
+                               self.source_path,
+                               **self.kwargs).goto_assignments()
+
+        def get_references(self, line, column):
+            return jedi.Script(self.source,
+                               line, column,
+                               self.source_path,
+                               **self.kwargs).usages()
+
+        def infer(self, line, column):
+            return jedi.Script(self.source,
+                               line, column,
+                               self.source_path,
+                               **self.kwargs).goto_definitions()
+
+        def get_names(self):
+            return jedi.api.names(self.source, self.source_path, **self.kwargs)
+
+    jedi_script_wrapper = JediScriptCompatWrapper
+
+
+def _dedupe(elements):
+    dupes = set()
+
+    def not_seen_yet(val):
+        if val in dupes:
+            return False
+        dupes.add(val)
+        return True
+    return [e for e in elements if not_seen_yet(e)]
+
 
 def get_venv_sys_path(venv):
     if jedi_create_environment is not None:
@@ -133,13 +216,28 @@ def get_venv_sys_path(venv):
     return get_venv_path(venv)
 
 
-class JediEPCHandler(object):
-    def __init__(self, sys_path=(), virtual_envs=(), sys_path_append=()):
-        self.script_kwargs = self._get_script_path_kwargs(
-            sys_path=sys_path,
-            virtual_envs=virtual_envs,
-            sys_path_append=sys_path_append,
+def _wrap_completion_result(comp):
+    try:
+        docstr = comp.docstring()
+    except Exception:
+        logger.warning(
+            "Cannot get docstring for completion %s", comp, exc_info=1
         )
+        docstr = ""
+    return dict(
+        word=comp.name,
+        doc=docstr,
+        description=candidates_description(comp),
+        symbol=candidate_symbol(comp),
+    )
+
+
+class JediEPCHandler(object):
+    def __init__(self, sys_path=None, virtual_envs=None, sys_path_append=None):
+        self.script_kwargs = JediEPCHandler._get_script_path_kwargs(
+            sys_path, virtual_envs, sys_path_append
+        )
+        logger.debug('jedi_epc_server: project kwargs=%r', self.script_kwargs)
 
     def get_sys_path(self):
         environment = self.script_kwargs.get('environment')
@@ -150,8 +248,8 @@ class JediEPCHandler(object):
             return sys_path
         return sys.path
 
-    @classmethod
-    def _get_script_path_kwargs(cls, sys_path, virtual_envs, sys_path_append):
+    @staticmethod
+    def _get_script_path_kwargs(sys_path, virtual_envs, sys_path_append):
         result = {}
         if jedi_create_environment:
             # Need to specify some environment explicitly to workaround
@@ -178,9 +276,11 @@ class JediEPCHandler(object):
         # Either multiple environments or custom sys_path extensions are
         # specified, or jedi version doesn't support environments.
         final_sys_path = []
+        sys_path = () if sys_path is None else sys_path
         final_sys_path.extend(path_expand_vars_and_user(p) for p in sys_path)
         for p in virtual_envs:
             final_sys_path.extend(get_venv_sys_path(path_expand_vars_and_user(p)))
+        sys_path_append = () if sys_path_append is None else sys_path_append
         final_sys_path.extend(
             path_expand_vars_and_user(p) for p in sys_path_append
         )
@@ -191,47 +291,31 @@ class JediEPCHandler(object):
                 return False
             dupes.add(val)
             return True
-        result['sys_path'] = [p for p in final_sys_path if not_seen_yet(p)]
+
+        result['sys_path'] = _dedupe(final_sys_path)
         return result
 
-    def jedi_script(self, source, line, column, source_path):
-        if NEED_ENCODE:
-            source = source.encode('utf-8')
-            source_path = source_path and source_path.encode('utf-8')
-        return jedi.Script(
-            source, line, column, source_path or '', **self.script_kwargs
-        )
-
-    def complete(self, *args):
-        def _wrap_completion_result(comp):
-            try:
-                docstr = comp.docstring()
-            except Exception:
-                logger.warning(
-                    "Cannot get docstring for completion %s", comp, exc_info=1
+    def jedi_script(self, source, source_path):
+        script_kwargs = self.script_kwargs.copy()
+        if jedi_get_default_project:
+            sys_path = script_kwargs.pop('sys_path', None)
+            if sys_path:
+                environment_path = getattr(script_kwargs.get('environment'), 'path', None)
+                script_kwargs['project'] = jedi.api.Project(
+                    jedi_get_default_project(source_path).path,
+                    environment_path=environment_path,
+                    sys_path=sys_path,
                 )
-                docstr = ""
-            return dict(
-                word=comp.name,
-                doc=docstr,
-                description=candidates_description(comp),
-                symbol=candidate_symbol(comp),
-            )
+        return jedi_script_wrapper(code=source, path=source_path, **script_kwargs)
 
+    def complete(self, source, line, column, source_path):
         return [
             _wrap_completion_result(comp)
-            for comp in self.jedi_script(*args).completions()
+            for comp in self.jedi_script(source, source_path).complete(line, column)
         ]
 
-
-    def my_complete(self, *args):
-        return [
-            {'name': comp.name, 'type': comp.type}
-            for comp in self.jedi_script(*args).completions()
-        ]
-
-    def get_in_function_call(self, *args):
-        sig = self.jedi_script(*args).call_signatures()
+    def get_in_function_call(self, source, line, column, source_path):
+        sig = self.jedi_script(source, source_path).get_signatures(line, column)
         call_def = sig[0] if sig else None
 
         if not call_def:
@@ -246,45 +330,22 @@ class JediEPCHandler(object):
             call_name=call_def.name,
         )
 
-    def _goto(self, method, *args):
-        """
-        Helper function for `goto_assignments` and `usages`.
+    def goto(self, source, line, column, source_path):
+        definitions = self.jedi_script(source, source_path).goto(line, column)
+        return [definition_to_short_dict(d) for d in definitions]
 
-        :arg  method: `jedi.Script.goto_assignments` or `jedi.Script.usages`
-        :arg    args: Arguments to `jedi_script`
+    def related_names(self, source, line, column, source_path):
+        definitions = self.jedi_script(source, source_path).get_references(line, column)
+        return [definition_to_short_dict(d) for d in definitions]
 
-        """
-        # `definitions` is a list. Each element is an instances of
-        # `jedi.api_classes.BaseOutput` subclass, i.e.,
-        # `jedi.api_classes.RelatedName` or `jedi.api_classes.Definition`.
-        definitions = method(self.jedi_script(*args))
-        return [dict(
-            column=d.column,
-            line_nr=d.line,
-            module_path=d.module_path if d.module_path != '__builtin__' else [],
-            module_name=d.module_name,
-            description=d.description,
-        ) for d in definitions]
-
-    def goto(self, *args):
-        return self._goto(jedi.Script.goto_assignments, *args)
-
-    def related_names(self, *args):
-        return self._goto(jedi.Script.usages, *args)
-
-    def get_definition(self, *args):
-        definitions = self.jedi_script(*args).goto_definitions()
+    def get_definition(self, source, line, column, source_path):
+        definitions = self.jedi_script(source, source_path).infer(line, column)
         return [definition_to_dict(d) for d in definitions]
 
-    def defined_names(self, *args):
-        # XXX: there's a bug in Jedi that returns returns definitions from inside
-        # classes or functions even though all_scopes=False is set by
-        # default. Hence some additional filtering is in order.
-        #
-        # See https://github.com/davidhalter/jedi/issues/1202
+    def defined_names(self, source, source_path):
         top_level_names = [
             defn
-            for defn in jedi.api.names(*args)
+            for defn in self.jedi_script(source, source_path).get_names()
             if defn.parent().type == 'module'
         ]
         return list(map(get_names_recursively, top_level_names))
@@ -292,7 +353,7 @@ class JediEPCHandler(object):
     def get_jedi_version(self):
         return [dict(
             name=module.__name__,
-            file=getattr(module, '__file__', []),
+            file=get_module_path(module),
             version=get_module_version(module) or [],
         ) for module in [sys, jedi, epc, sexpdata]]
 
@@ -302,7 +363,7 @@ def candidate_symbol(comp):
     Return a character representing completion type.
 
     :type comp: jedi.api.Completion
-    :arg  comp: A completion object returned by `jedi.Script.completions`.
+    :arg  comp: A completion object returned by `jedi.Script.complete`.
 
     """
     try:
@@ -333,15 +394,22 @@ def definition_to_dict(d):
     return dict(
         doc=d.docstring(),
         description=d.description,
-        desc_with_module=d.desc_with_module,
         line_nr=d.line,
         column=d.column,
-        module_path=d.module_path,
-        name=getattr(d, 'name', []),
-        full_name=getattr(d, 'full_name', []),
-        type=getattr(d, 'type', []),
+        module_path=str(d.module_path),
+        name=getattr(d, 'name', '?'),
+        full_name=getattr(d, 'full_name', '?'),
+        type=getattr(d, 'type', '?'),
     )
 
+def definition_to_short_dict(d):
+    return dict(
+        column=d.column,
+        line_nr=d.line,
+        module_path=str(d.module_path) if d.module_path != '__builtin__' else '',
+        module_name=d.module_name,
+        description=d.description,
+    )
 
 def get_names_recursively(definition, parent=None):
     """
@@ -362,20 +430,19 @@ def get_names_recursively(definition, parent=None):
         return [d]
 
 
+def get_module_path(module):
+    if module.__name__ in sys.builtin_module_names:
+        return '%s <built-in>' % sys.executable
+    return getattr(module, '__file__', [])
+
+
 def get_module_version(module):
     notfound = object()
     for key in ['__version__', 'version']:
         version = getattr(module, key, notfound)
         if version is not notfound:
             return version
-    try:
-        from pkg_resources import get_distribution, DistributionNotFound
-        try:
-            return get_distribution(module.__name__).version
-        except DistributionNotFound:
-            pass
-    except ImportError:
-        pass
+    return metadata.version(module.__name__)
 
 
 def path_expand_vars_and_user(p):
@@ -420,11 +487,6 @@ def jedi_epc_server(
     :type log_settings: LogSettings
 
     """
-    logger.debug(
-        'jedi_epc_server: sys_path=%r virtual_env=%r sys_path_append=%r',
-        sys_path, virtual_env, sys_path_append,
-    )
-
     if not virtual_env and os.getenv('VIRTUAL_ENV'):
         logger.debug(
             'Taking virtual env from VIRTUAL_ENV: %r',
@@ -443,7 +505,6 @@ def jedi_epc_server(
     )
     server = epc.server.EPCServer((address, port))
     server.register_function(handler.complete)
-    server.register_function(handler.my_complete)
     server.register_function(handler.get_in_function_call)
     server.register_function(handler.goto)
     server.register_function(handler.related_names)
