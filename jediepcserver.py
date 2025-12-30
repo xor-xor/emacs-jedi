@@ -314,6 +314,14 @@ class JediEPCHandler(object):
             for comp in self.jedi_script(source, source_path).complete(line, column)
         ]
 
+
+    def my_complete(self, *args):
+        return [
+            {'name': comp.name, 'type': comp.type}
+            for comp in self.jedi_script(*args).completions()
+        ]
+
+
     def get_in_function_call(self, source, line, column, source_path):
         sig = self.jedi_script(source, source_path).get_signatures(line, column)
         call_def = sig[0] if sig else None
@@ -505,6 +513,7 @@ def jedi_epc_server(
     )
     server = epc.server.EPCServer((address, port))
     server.register_function(handler.complete)
+    server.register_function(handler.my_complete)
     server.register_function(handler.get_in_function_call)
     server.register_function(handler.goto)
     server.register_function(handler.related_names)
