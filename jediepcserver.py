@@ -315,10 +315,10 @@ class JediEPCHandler(object):
         ]
 
 
-    def my_complete(self, *args):
+    def my_complete(self, source, line, column, source_path):
         return [
             {'name': comp.name, 'type': comp.type}
-            for comp in self.jedi_script(*args).completions()
+            for comp in self.jedi_script(source, source_path).complete(line, column)
         ]
 
 
@@ -512,7 +512,6 @@ def jedi_epc_server(
         handler.get_sys_path(),
     )
     server = epc.server.EPCServer((address, port))
-    server.register_function(handler.complete)
     server.register_function(handler.my_complete)
     server.register_function(handler.get_in_function_call)
     server.register_function(handler.goto)
